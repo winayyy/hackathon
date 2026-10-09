@@ -1,0 +1,31 @@
+
+services:
+  react-app:
+    build:
+      context: ./react-app
+    image: hackathon-react:1.0
+    container_name: hackathon-react
+    ports:
+      - "3000:80"
+    depends_on:
+      - python-app
+      - dotnet-app
+    restart: unless-stopped
+
+  python-app:
+    build:
+      context: ./python-app
+    image: hackathon-python-api:1.0
+    container_name: hackathon-python
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  dotnet-app:
+    build:
+      context: ./dotnet-app
+    image: hackathon-dotnet-api:1.0
+    container_name: hackathon-dotnet
+    ports:
+      - "5000:5000"
+    restart: unless-stopped

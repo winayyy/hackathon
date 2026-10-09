@@ -1,0 +1,25 @@
+# Python
+python-app/.venv/
+python-app/__pycache__/
+*.py[cod]
+
+# React
+react-app/node_modules/
+react-app/dist/
+
+# .NET
+dotnet-app/bin/
+dotnet-app/obj/
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+**/secrets/
+*.pem
+*.key
+
+# Editor and OS
+.vscode/
+.DS_Store
+Thumbs.db
