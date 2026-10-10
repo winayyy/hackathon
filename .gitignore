@@ -1,25 +1,21 @@
-# Python
-python-app/.venv/
-python-app/__pycache__/
-*.py[cod]
-
-# React
-react-app/node_modules/
-react-app/dist/
-
-# .NET
-dotnet-app/bin/
-dotnet-app/obj/
-
-# Secrets and environment files
+# Environment secrets
 .env
 .env.*
 !.env.example
-**/secrets/
-*.pem
-*.key
 
-# Editor and OS
+# Python
+.venv/
+**/.venv/
+__pycache__/
+*.py[cod]
+
+# Node.js
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+
+# Local IDE and OS files
 .vscode/
 .DS_Store
 Thumbs.db
