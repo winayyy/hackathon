@@ -59,6 +59,45 @@ engine = create_engine(
 MAX_ROWS = 100
 QUERY_TIMEOUT_MS = 5000
 
+def validate_query(query: str) -> exp.Select:
+    statements = sqlglot.parse(query, read="mysql")
+
+    if len(statements) != 1 or statements[0] is None:
+        raise ValueError("Submit exactly one SQL statement.")
+
+    parsed = statements[0]
+
+    if not isinstance(parsed, exp.Select):
+        raise ValueError("Only SELECT queries are allowed.")
+
+    if parsed.find(exp.Into):
+        raise ValueError("SELECT INTO is not allowed.")
+
+    if parsed.args.get("locks"):
+        raise ValueError("Locking queries are not allowed.")
+
+    limit_node = parsed.args.get("limit")
+
+    if limit_node is None:
+        parsed = parsed.limit(MAX_ROWS)
+    else:
+        limit_expression = limit_node.expression
+
+        if (
+            not isinstance(limit_expression, exp.Literal)
+            or not limit_expression.is_int
+        ):
+            raise ValueError("Use a numeric LIMIT of at most 100.")
+
+        requested_limit = int(limit_expression.this)
+
+        if requested_limit < 0:
+            raise ValueError("LIMIT cannot be negative.")
+
+        parsed = parsed.limit(min(requested_limit, MAX_ROWS))
+
+    return parsed
+
 
 # --------------------------------------------------
 # 3. Request model
@@ -72,24 +111,14 @@ class QueryRequest(BaseModel):
 # 4. Basic PII masking
 # --------------------------------------------------
 
-def mask_sensitive_value(column_name, value):
-    if value is None:
-        return None
-
+def sensitive_field_type(column_name):
     column = column_name.lower().replace("_", "")
 
-    # Mask email addresses while preserving their domain.
     if "email" in column:
-        email = str(value)
+        return "email"
 
-        if "@" in email:
-            local, domain = email.rsplit("@", 1)
-            return f"{local[:1]}***@{domain}" if local else f"***@{domain}"
-
-        return "***MASKED***"
-
-    # Mask other commonly sensitive column names.
     sensitive_fields = (
+        "name",
         "phone",
         "mobile",
         "ssn",
@@ -99,10 +128,58 @@ def mask_sensitive_value(column_name, value):
     )
 
     if any(field in column for field in sensitive_fields):
+        return "sensitive"
+
+    return None
+
+
+def mask_sensitive_value(column_name, value, sensitive_type=None):
+    if value is None:
+        return None
+
+    field_type = sensitive_type or sensitive_field_type(column_name)
+
+    if field_type == "email":
+        email = str(value)
+
+        if "@" in email:
+            local, domain = email.rsplit("@", 1)
+            return f"{local[:1]}***@{domain}" if local else f"***@{domain}"
+
+        return "***MASKED***"
+
+    if field_type == "sensitive":
         return "***MASKED***"
 
     return value
 
+
+def get_sensitive_output_types(parsed):
+    sensitive_output_types = {}
+
+    for projection in parsed.expressions:
+        output_name = projection.alias_or_name
+
+        if not output_name:
+            continue
+
+        source_types = {
+            field_type
+            for column in projection.find_all(exp.Column)
+            if (field_type := sensitive_field_type(column.name))
+        }
+
+        if source_types:
+            output_type = (
+                next(iter(source_types))
+                if len(source_types) == 1
+                else "sensitive"
+            )
+
+            sensitive_output_types[output_name.lower()] = output_type
+
+    return sensitive_output_types
+        
 
 # --------------------------------------------------
 # 5. Convert database values to JSON-safe values
@@ -162,10 +239,57 @@ def database_health():
 # --------------------------------------------------
 # 8. Validate and execute read-only queries
 # --------------------------------------------------
+def validate_query(query: str) -> exp.Select:
+    statements = sqlglot.parse(query, read="mysql")
+
+    if len(statements) != 1 or statements[0] is None:
+        raise ValueError("Submit exactly one SQL statement.")
+
+    parsed = statements[0]
+
+    if not isinstance(parsed, exp.Select):
+        raise ValueError("Only SELECT queries are allowed.")
+
+    if parsed.find(exp.Into):
+        raise ValueError("SELECT INTO is not allowed.")
+
+    if parsed.args.get("locks"):
+        raise ValueError("Locking queries are not allowed.")
+
+    limit_node = parsed.args.get("limit")
+
+    if limit_node is None:
+        parsed = parsed.limit(MAX_ROWS)
+    else:
+        limit_expression = limit_node.expression
+
+        if (
+            not isinstance(limit_expression, exp.Literal)
+            or not limit_expression.is_int
+        ):
+            raise ValueError("Use a numeric LIMIT of at most 100.")
+
+        requested_limit = int(limit_expression.this)
+
+        if requested_limit < 0:
+            raise ValueError("LIMIT cannot be negative.")
+
+        parsed = parsed.limit(min(requested_limit, MAX_ROWS))
+
+    return parsed
+
 
 @app.post("/api/query")
 def run_query(request: QueryRequest):
-    # Parse and validate the SQL before executing it.
+        # Parse and validate SQL before executing it.
+    try:
+        parsed = validate_query(request.query)
+        safe_sql = parsed.sql(dialect="mysql")
+        sensitive_output_types = get_sensitive_output_types(parsed)
+
+    except (ValueError, sqlglot.errors.ParseError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+        
     try:
         statements = sqlglot.parse(request.query, read="mysql")
 
@@ -207,6 +331,7 @@ def run_query(request: QueryRequest):
             parsed = parsed.limit(min(requested_limit, MAX_ROWS))
 
         safe_sql = parsed.sql(dialect="mysql")
+        sensitive_output_types = get_sensitive_output_types(parsed)
 
     except (ValueError, sqlglot.errors.ParseError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -235,7 +360,11 @@ def run_query(request: QueryRequest):
                     value = serialize_value(database_row._mapping[column])
 
                     # Apply masking before returning results to the frontend.
-                    value = mask_sensitive_value(column, value)
+                    value = mask_sensitive_value(
+                            column,
+                            value,
+                            sensitive_output_types.get(column.lower()),
+                        )
 
                     row[column] = value
 
