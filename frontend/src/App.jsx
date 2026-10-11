@@ -2,7 +2,7 @@
 import { useState } from "react";
 import "./App.css";
 
-const API_URL = "http://127.0.0.1:8001";
+const API_URL = "";
 
 export default function App() {
   const [query, setQuery] = useState(
@@ -17,10 +17,12 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [exportMessage, setExportMessage] = useState("");
 
   async function runQuery() {
     setLoading(true);
     setError("");
+    setExportMessage("");
     setResults(null);
 
     try {
@@ -77,6 +79,58 @@ export default function App() {
 
   function openEditor() {
     setActiveView("editor");
+  }
+
+  // Escape CSV values and protect against spreadsheet formula injection.
+  function escapeCsvValue(value) {
+    let text = value == null ? "" : String(value);
+
+    // Prefix formula-like cells so spreadsheets don't execute them.
+    if (/^[\t\r ]*[=+\-@]/.test(text)) {
+      text = "'" + text;
+    }
+
+    // Double quotes inside a CSV field must be escaped.
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+
+  function exportCsv() {
+    if (!results || !Array.isArray(results.columns)) {
+      return;
+    }
+
+    const headers = results.columns.map(escapeCsvValue).join(",");
+
+    const rows = results.rows.map((row) =>
+      results.columns
+        .map((column) => escapeCsvValue(row[column]))
+        .join(",")
+    );
+
+    // UTF-8 BOM helps Excel detect the file's encoding.
+    const csvContent = "\uFEFF" + [headers, ...rows].join("\r\n");
+
+    const blob = new Blob([csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    const date = new Date().toISOString().slice(0, 10);
+
+    link.href = url;
+    link.download = `dataops-export-${date}.csv`;
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    URL.revokeObjectURL(url);
+
+    setExportMessage(
+      `CSV exported successfully (${results.row_count} rows).`
+    );
   }
 
   return (
@@ -193,6 +247,12 @@ export default function App() {
               </section>
             )}
 
+            {exportMessage && !error && (
+              <section className="message-card" role="status">
+                <p>{exportMessage}</p>
+              </section>
+            )}
+
             {results && (
               <section className="results-card">
                 <div className="section-header">
@@ -201,12 +261,29 @@ export default function App() {
                     <p>{results.row_count} row(s) returned</p>
                   </div>
 
-                  <span className="language-badge">SUCCESS</span>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <span className="language-badge">SUCCESS</span>
+
+                    <button
+                      className="run-button"
+                      onClick={exportCsv}
+                    >
+                      ↓ Export CSV
+                    </button>
+                  </div>
                 </div>
 
                 {results.rows.length === 0 ? (
                   <p className="empty-results">
-                    The query returned no rows.
+                    The query returned no rows. You can still export the
+                    column headers.
                   </p>
                 ) : (
                   <div className="table-container">
@@ -293,10 +370,7 @@ export default function App() {
                   Run a query in the editor to see it recorded here.
                 </p>
 
-                <button
-                  className="run-button"
-                  onClick={openEditor}
-                >
+                <button className="run-button" onClick={openEditor}>
                   Open Query Editor
                 </button>
               </div>

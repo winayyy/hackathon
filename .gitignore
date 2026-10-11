@@ -1,12 +1,17 @@
+
 # Environment secrets
 .env
 .env.*
 !.env.example
+**/.env
+**/.env.*
+!**/.env.example
 
 # Python
 .venv/
 **/.venv/
 __pycache__/
+**/__pycache__/
 *.py[cod]
 
 # Node.js
@@ -14,6 +19,11 @@ node_modules/
 **/node_modules/
 dist/
 **/dist/
+
+# Local query history and SQLite databases
+backend/query_history.db
+*.sqlite
+*.sqlite3
 
 # Local IDE and OS files
 .vscode/
