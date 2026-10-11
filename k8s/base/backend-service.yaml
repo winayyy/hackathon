@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dataops-backend
+  namespace: dataops-console
+spec:
+  type: ClusterIP
+  selector:
+    app: dataops-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

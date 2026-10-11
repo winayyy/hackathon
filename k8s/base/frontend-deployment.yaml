@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataops-frontend
+  namespace: dataops-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dataops-frontend
+  template:
+    metadata:
+      labels:
+        app: dataops-frontend
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: frontend
+          image: dataops-frontend:1.0
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 20

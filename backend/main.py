@@ -69,7 +69,7 @@ QUERY_TIMEOUT_MS = 5000
 # 3. Query history storage (separate SQLite database)
 # --------------------------------------------------
 
-HISTORY_DB_PATH = HISTORY_DB_PATH = Path(
+HISTORY_DB_PATH = Path(
     os.getenv(
         "HISTORY_DB_PATH",
         str(Path(__file__).resolve().parent / "query_history.db"),
