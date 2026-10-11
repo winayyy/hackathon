@@ -8,3 +8,4 @@ __pycache__/
 node_modules/
 **/node_modules/
 dist/
+query_history.db
