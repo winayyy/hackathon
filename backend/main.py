@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 
+
 # --------------------------------------------------
 # 1. Load environment variables
 # --------------------------------------------------
@@ -34,6 +35,7 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
+
 
 # --------------------------------------------------
 # 2. Configure MySQL connection
@@ -59,6 +61,11 @@ engine = create_engine(
 MAX_ROWS = 100
 QUERY_TIMEOUT_MS = 5000
 
+
+# --------------------------------------------------
+# 3. Validate SQL queries
+# --------------------------------------------------
+
 def validate_query(query: str) -> exp.Select:
     statements = sqlglot.parse(query, read="mysql")
 
@@ -67,15 +74,37 @@ def validate_query(query: str) -> exp.Select:
 
     parsed = statements[0]
 
+    # Only SELECT statements are allowed.
     if not isinstance(parsed, exp.Select):
         raise ValueError("Only SELECT queries are allowed.")
 
+    # Reject write or schema-changing operations anywhere
+    # in the SQL tree, including nested queries and CTEs.
+    forbidden_operations = (
+        exp.Insert,
+        exp.Update,
+        exp.Delete,
+        exp.Create,
+        exp.Drop,
+        exp.Alter,
+        exp.Merge,
+    )
+
+    for node in parsed.walk():
+        if isinstance(node, forbidden_operations):
+            raise ValueError(
+                "Write or schema-changing operations are not allowed."
+            )
+
+    # Reject SELECT INTO.
     if parsed.find(exp.Into):
         raise ValueError("SELECT INTO is not allowed.")
 
+    # Reject locking reads.
     if parsed.args.get("locks"):
         raise ValueError("Locking queries are not allowed.")
 
+    # Enforce a maximum of 100 rows.
     limit_node = parsed.args.get("limit")
 
     if limit_node is None:
@@ -100,7 +129,7 @@ def validate_query(query: str) -> exp.Select:
 
 
 # --------------------------------------------------
-# 3. Request model
+# 4. Request model
 # --------------------------------------------------
 
 class QueryRequest(BaseModel):
@@ -108,7 +137,7 @@ class QueryRequest(BaseModel):
 
 
 # --------------------------------------------------
-# 4. Basic PII masking
+# 5. PII masking
 # --------------------------------------------------
 
 def sensitive_field_type(column_name):
@@ -144,7 +173,9 @@ def mask_sensitive_value(column_name, value, sensitive_type=None):
 
         if "@" in email:
             local, domain = email.rsplit("@", 1)
-            return f"{local[:1]}***@{domain}" if local else f"***@{domain}"
+            if local:
+                return f"{local[0]}***@{domain}"
+            return f"***@{domain}"
 
         return "***MASKED***"
 
@@ -179,10 +210,10 @@ def get_sensitive_output_types(parsed):
             sensitive_output_types[output_name.lower()] = output_type
 
     return sensitive_output_types
-        
+
 
 # --------------------------------------------------
-# 5. Convert database values to JSON-safe values
+# 6. Convert database values to JSON-safe values
 # --------------------------------------------------
 
 def serialize_value(value):
@@ -202,7 +233,7 @@ def serialize_value(value):
 
 
 # --------------------------------------------------
-# 6. Health check
+# 7. Health check
 # --------------------------------------------------
 
 @app.get("/health")
@@ -214,7 +245,7 @@ def health_check():
 
 
 # --------------------------------------------------
-# 7. Database connection check
+# 8. Database connection check
 # --------------------------------------------------
 
 @app.get("/api/db-health")
@@ -237,99 +268,14 @@ def database_health():
 
 
 # --------------------------------------------------
-# 8. Validate and execute read-only queries
+# 9. Execute validated read-only queries
 # --------------------------------------------------
-def validate_query(query: str) -> exp.Select:
-    statements = sqlglot.parse(query, read="mysql")
-
-    if len(statements) != 1 or statements[0] is None:
-        raise ValueError("Submit exactly one SQL statement.")
-
-    parsed = statements[0]
-
-    if not isinstance(parsed, exp.Select):
-        raise ValueError("Only SELECT queries are allowed.")
-
-    if parsed.find(exp.Into):
-        raise ValueError("SELECT INTO is not allowed.")
-
-    if parsed.args.get("locks"):
-        raise ValueError("Locking queries are not allowed.")
-
-    limit_node = parsed.args.get("limit")
-
-    if limit_node is None:
-        parsed = parsed.limit(MAX_ROWS)
-    else:
-        limit_expression = limit_node.expression
-
-        if (
-            not isinstance(limit_expression, exp.Literal)
-            or not limit_expression.is_int
-        ):
-            raise ValueError("Use a numeric LIMIT of at most 100.")
-
-        requested_limit = int(limit_expression.this)
-
-        if requested_limit < 0:
-            raise ValueError("LIMIT cannot be negative.")
-
-        parsed = parsed.limit(min(requested_limit, MAX_ROWS))
-
-    return parsed
-
 
 @app.post("/api/query")
 def run_query(request: QueryRequest):
-        # Parse and validate SQL before executing it.
+    # Validate once, before connecting to the database.
     try:
         parsed = validate_query(request.query)
-        safe_sql = parsed.sql(dialect="mysql")
-        sensitive_output_types = get_sensitive_output_types(parsed)
-
-    except (ValueError, sqlglot.errors.ParseError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-        
-    try:
-        statements = sqlglot.parse(request.query, read="mysql")
-
-        if len(statements) != 1 or statements[0] is None:
-            raise ValueError("Submit exactly one SQL statement.")
-
-        parsed = statements[0]
-
-        # Only SELECT statements are accepted.
-        if not isinstance(parsed, exp.Select):
-            raise ValueError("Only SELECT queries are allowed.")
-
-        # Reject SELECT INTO and locking reads.
-        if parsed.find(exp.Into):
-            raise ValueError("SELECT INTO is not allowed.")
-
-        if parsed.args.get("locks"):
-            raise ValueError("Locking queries are not allowed.")
-
-        # Enforce the result-row limit.
-        limit_node = parsed.args.get("limit")
-
-        if limit_node is None:
-            parsed = parsed.limit(MAX_ROWS)
-        else:
-            limit_expression = limit_node.expression
-
-            if (
-                not isinstance(limit_expression, exp.Literal)
-                or not limit_expression.is_int
-            ):
-                raise ValueError("Use a numeric LIMIT of at most 100.")
-
-            requested_limit = int(limit_expression.this)
-
-            if requested_limit < 0:
-                raise ValueError("LIMIT cannot be negative.")
-
-            parsed = parsed.limit(min(requested_limit, MAX_ROWS))
-
         safe_sql = parsed.sql(dialect="mysql")
         sensitive_output_types = get_sensitive_output_types(parsed)
 
@@ -339,13 +285,12 @@ def run_query(request: QueryRequest):
     # Execute the validated query.
     try:
         with engine.connect() as connection:
-            # MySQL-specific execution time limit.
+            # Apply a MySQL execution-time limit.
             connection.execute(
                 text(f"SET SESSION MAX_EXECUTION_TIME = {QUERY_TIMEOUT_MS}")
             )
 
             result = connection.execute(text(safe_sql))
-
             columns = list(result.keys())
             rows = []
 
@@ -359,12 +304,12 @@ def run_query(request: QueryRequest):
                 for column in columns:
                     value = serialize_value(database_row._mapping[column])
 
-                    # Apply masking before returning results to the frontend.
+                    # Mask sensitive values before returning the response.
                     value = mask_sensitive_value(
-                            column,
-                            value,
-                            sensitive_output_types.get(column.lower()),
-                        )
+                        column,
+                        value,
+                        sensitive_output_types.get(column.lower()),
+                    )
 
                     row[column] = value
 
@@ -377,7 +322,7 @@ def run_query(request: QueryRequest):
         }
 
     except Exception:
-        # Avoid exposing database credentials, SQL internals, or stack traces.
+        # Avoid exposing credentials, SQL internals, or stack traces.
         raise HTTPException(
             status_code=400,
             detail="Query execution failed. Check the SQL and database connection.",
